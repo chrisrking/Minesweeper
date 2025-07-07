@@ -1,0 +1,154 @@
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.common.action_chains import ActionChains
+from collections import deque
+import time, random
+
+# ── browser setup ──────────────────────────────────────────────
+driver = webdriver.Chrome()
+driver.get("https://minesweeper.online")
+driver.maximize_window()
+wait = WebDriverWait(driver, 10)
+actions = ActionChains(driver)
+
+# ── site boilerplate (cookies, play button, iframe check) ─────
+try:
+    driver.find_element(By.ID, "cookies-notice-accept").click()
+except:
+    pass
+
+try:
+    driver.find_element(By.LINK_TEXT, "PLAY FOR FREE").click()
+    print("Clicked 'PLAY FOR FREE'")
+    time.sleep(2)
+except:
+    print("Could not click the 'PLAY FOR FREE' button.")
+
+frames = driver.find_elements(By.CSS_SELECTOR, "iframe[src*='game']")
+if frames:
+    wait.until(EC.frame_to_be_available_and_switch_to_it(frames[0]))
+    print("Switched into game iframe")
+else:
+    print("No game iframe found - staying in main document")
+
+wait.until(EC.presence_of_element_located(
+    (By.CSS_SELECTOR, "div[data-x='0'][data-y='0']")))
+print("Board is ready")
+
+# ── helpers for board interaction ─────────────────────────────
+ROWS, COLS = 9, 9           # beginner board; adjust for larger boards
+
+def cell_element(x, y):
+    return driver.find_element(By.CSS_SELECTOR,
+                               f"div[data-x='{x}'][data-y='{y}']")
+
+def cell_classes(x, y):
+    return cell_element(x, y).get_attribute("class")
+
+def neighbours(x, y):
+    for dx in (-1, 0, 1):
+        for dy in (-1, 0, 1):
+            if dx == 0 and dy == 0:
+                continue
+            nx, ny = x + dx, y + dy
+            if 0 <= nx < ROWS and 0 <= ny < COLS:
+                yield nx, ny
+
+def left_click(elem):
+    actions.move_to_element(elem).click().perform()
+    actions.reset_actions()
+
+def right_click(elem):
+    actions.move_to_element(elem).context_click().perform()
+    actions.reset_actions()
+
+# ── flood fill for zero regions ───────────────────────────────
+def flood_fill_zeros(x0, y0):
+    q = deque([(x0, y0)])
+    seen = {(x0, y0)}
+    while q:
+        x, y = q.popleft()
+        cls = cell_classes(x, y)
+        if "hdd_closed" in cls:
+            left_click(cell_element(x, y))
+            cls = cell_classes(x, y)
+        if "hdd_type0" in cls:
+            for nx, ny in neighbours(x, y):
+                if (nx, ny) not in seen:
+                    seen.add((nx, ny))
+                    q.append((nx, ny))
+
+# ── deterministic rule application ────────────────────────────
+def apply_basic_rules():
+    made_progress = True
+    while made_progress:
+        made_progress = False
+        for x in range(ROWS):
+            for y in range(COLS):
+                cls = cell_classes(x, y)
+                if "hdd_type" not in cls:
+                    continue
+                num = int(cls.split("hdd_type")[1][0])      # 0–8
+                hidden, flagged = [], 0
+                for nx, ny in neighbours(x, y):
+                    ncls = cell_classes(nx, ny)
+                    if "hdd_closed" in ncls:
+                        hidden.append((nx, ny))
+                    elif "hdd_top-mark1" in ncls:
+                        flagged += 1
+                if num == flagged and hidden:
+                    # safe to open hidden neighbours
+                    for hx, hy in hidden:
+                        left_click(cell_element(hx, hy))
+                        flood_fill_zeros(hx, hy)
+                    made_progress = True
+                elif num == flagged + len(hidden) and hidden:
+                    # all hidden neighbours are mines
+                    for hx, hy in hidden:
+                        right_click(cell_element(hx, hy))
+                    made_progress = True
+
+# ── face-based game status ────────────────────────────────────
+def get_game_status():
+    cls = driver.find_element(By.ID, "top_area_face").get_attribute("class")
+    if "hdd_top-area-face-lose" in cls:
+        return "lose"
+    if "hdd_top-area-face-win" in cls:
+        return "win"
+    return "running"
+
+# ── main play loop ────────────────────────────────────────────
+games_played = 0
+
+while True:
+    # 1. start board by clicking (0,0) and flood-fill zeros
+    left_click(cell_element(0, 0))
+    flood_fill_zeros(0, 0)
+
+    # 2. keep applying rules while game is running
+    while get_game_status() == "running":
+        apply_basic_rules()
+        # if stuck with no progress and hidden squares remain, guess randomly
+        if not driver.find_elements(By.CSS_SELECTOR, "div.cell.hdd_closed"):
+            break
+
+    status = get_game_status()
+
+    if status == "win":
+        print("Game won after", games_played, "retries. Script finished.")
+        break
+
+    if status == "lose":
+        games_played += 1
+        print("Game lost. Restarting game number", games_played)
+        driver.find_element(By.ID, "top_area_face").click()
+        WebDriverWait(driver, 10).until(
+            EC.presence_of_element_located(
+                (By.CSS_SELECTOR, "div.cell.hdd_closed"))
+        )
+        # loop continues for the new board
+
+time.sleep(500)
+driver.quit()

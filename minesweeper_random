@@ -1,0 +1,99 @@
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.common.action_chains import ActionChains
+import time, random
+
+driver = webdriver.Chrome()
+driver.get("https://minesweeper.online")
+driver.maximize_window()
+
+wait = WebDriverWait(driver, 10)
+game_start = False
+games_played = 0
+
+# Check for cookies
+try:
+    driver.find_element(By.ID, "cookies-notice-accept").click()
+except:
+    pass
+
+# Find and press the play game button
+try:
+    driver.find_element(By.LINK_TEXT, "PLAY FOR FREE").click()
+    game_start = True
+    print("Clicked 'PLAY FOR FREE'")
+    time.sleep(5)
+except:
+    print("Could not find or click the 'PLAY FOR FREE' button.")
+
+# Switch frame if the board is in an iframe (this allows for continuing to the game screen and clicking the cells in game)
+frames = driver.find_elements(By.CSS_SELECTOR, "iframe[src*='game']")
+if frames:
+    wait.until(EC.frame_to_be_available_and_switch_to_it(frames[0]))
+    print("Switched into game iframe")
+else:
+    print("No game iframe found - staying in main document")
+
+# Wait until the board is visible
+wait.until(EC.presence_of_element_located(
+    (By.CSS_SELECTOR, "div[data-x='0'][data-y='0']")))
+print("Board is ready")
+
+# Run Random Clicking Game
+# helper: return 'running', 'lose', or 'win' according to the face
+def get_game_status():
+    face = driver.find_element(By.ID, "top_area_face")
+    cls = face.get_attribute("class")
+    if "hdd_top-area-face-lose" in cls:
+        return "lose"
+    if "hdd_top-area-face-win" in cls:
+        return "win"
+    return "running"
+
+# helper: click one random hidden cell
+actions = ActionChains(driver)
+
+def click_one_hidden():
+    hidden = driver.find_elements(By.CSS_SELECTOR, "div.cell.hdd_closed")
+    if not hidden:
+        return False
+    cell = random.choice(hidden)
+    driver.execute_script("arguments[0].scrollIntoView(true);", cell)
+    actions.move_to_element(cell).click().perform()
+    actions.reset_actions()
+    row = cell.get_attribute("data-x")
+    col = cell.get_attribute("data-y")
+    print(f"Clicked cell at row {row}, column {col}")
+    return True
+
+# main loop: play until win, restart on loss
+while True:
+    # click until the face changes to win or lose
+    while get_game_status() == "running":
+        if not click_one_hidden():
+            break
+        time.sleep(0.0001)
+
+    status = get_game_status()
+
+    if status == "win":
+        print("Game won. Stopping script.")
+        print("Games played = ", games_played)
+        break
+
+    if status == "lose":
+        games_played = games_played + 1
+        print("Game lost. Restarting. Game Number #", games_played)
+        driver.find_element(By.ID, "top_area_face").click()
+        # wait until a fresh board appears
+        WebDriverWait(driver, 10).until(
+            EC.presence_of_element_located(
+                (By.CSS_SELECTOR, "div.cell.hdd_closed"))
+        )
+        # loop continues with the new game
+
+# optional delay so you can see the final board
+time.sleep(500)
+driver.quit()
